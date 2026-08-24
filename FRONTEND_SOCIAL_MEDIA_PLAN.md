@@ -18,6 +18,8 @@ This document describes the next phase of the mobile frontend after auth and onb
 
 Frontend currently has:
 - `mobile-app/App.tsx`: signup/login screen and placeholder Google auth flow.
+- `mobile-app/App.tsx`: feed screen connected to `GET /feed`, with backend image URLs rendered and video URL records displayed in a video-ready tile.
+- `mobile-app/App.tsx`: Phase A profile and engagement controls for social counts, follow/request state, likes, saves, comments, and shares.
 - `mobile-app/README-authentication.md`: backend contract for auth routes.
 
 Backend currently exposes:

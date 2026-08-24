@@ -1,8 +1,12 @@
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useMemo, useState } from 'react';
+import * as SecureStore from 'expo-secure-store';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Animated,
+  Easing,
+  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -15,6 +19,7 @@ import {
 
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || (Platform.OS === 'android' ? 'http://10.0.2.2:8000' : 'http://localhost:8000');
 const GOOGLE_PLACEHOLDER = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID || 'replace-me-google-client-id';
+const SESSION_STORAGE_KEY = 'partnerhub.session';
 
 type Tab = 'feed' | 'search' | 'dms' | 'profile';
 
@@ -28,6 +33,17 @@ type Post = {
   creatorDisplayName?: string;
   creatorAvatarUrl?: string;
   created_at?: string;
+  views?: number;
+  completions?: number;
+};
+
+type Engagement = {
+  likes: number;
+  comments: number;
+  shares: number;
+  bookmarks: number;
+  likedByViewer: boolean;
+  bookmarkedByViewer: boolean;
 };
 
 type Story = {
@@ -44,7 +60,15 @@ type Profile = {
   displayName: string;
   bio?: string | null;
   avatarUrl?: string | null;
+  bannerUrl?: string | null;
+  websiteUrl?: string | null;
+  location?: string | null;
+  pronouns?: string | null;
   isPrivate?: boolean;
+  followerCount?: number;
+  followingCount?: number;
+  postCount?: number;
+  relationshipStatus?: 'none' | 'following' | 'requested';
 };
 
 type Thread = {
@@ -52,6 +76,21 @@ type Thread = {
   participantIds: string[];
   lastMessage: string;
   updatedAt: string;
+};
+
+type RouletteOption = {
+  id: string;
+  label: string;
+  kind: string;
+  probability: number;
+  visualIndex: number;
+};
+
+type RouletteSession = {
+  sessionId: number;
+  options: RouletteOption[];
+  engineVersion: string;
+  visualSectorCount: number;
 };
 
 export default function App() {
@@ -64,6 +103,12 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<Profile | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>('feed');
   const [feed, setFeed] = useState<Post[]>([]);
+  const [feedLoading, setFeedLoading] = useState(false);
+  const [feedError, setFeedError] = useState<string | null>(null);
+  const [engagementByPost, setEngagementByPost] = useState<Record<string, Engagement>>({});
+  const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
+  const [expandedComments, setExpandedComments] = useState<Record<string, boolean>>({});
+  const [commentsByPost, setCommentsByPost] = useState<Record<string, any[]>>({});
   const [stories, setStories] = useState<Story[]>([]);
   const [selectedStory, setSelectedStory] = useState<Story | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -75,7 +120,7 @@ export default function App() {
   const [viewingProfilePosts, setViewingProfilePosts] = useState<Post[]>([]);
   const [profileContent, setProfileContent] = useState<Post[]>([]);
   const [editMode, setEditMode] = useState(false);
-  const [profileEdit, setProfileEdit] = useState({ handle: '', displayName: '', bio: '', avatarUrl: '', isPrivate: false });
+  const [profileEdit, setProfileEdit] = useState({ handle: '', displayName: '', bio: '', avatarUrl: '', websiteUrl: '', isPrivate: false });
   const [newPostUrl, setNewPostUrl] = useState('');
   const [newPostCaption, setNewPostCaption] = useState('');
   const [newPostType, setNewPostType] = useState<'image' | 'video'>('image');
@@ -85,6 +130,14 @@ export default function App() {
   const [newThreadMessage, setNewThreadMessage] = useState('');
   const [newMessageText, setNewMessageText] = useState('');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [adsWatched, setAdsWatched] = useState(0);
+  const [adsRequired, setAdsRequired] = useState(5);
+  const [showRoulette, setShowRoulette] = useState(false);
+  const [rouletteSession, setRouletteSession] = useState<RouletteSession | null>(null);
+  const [spinning, setSpinning] = useState(false);
+  const [spinResult, setSpinResult] = useState<any | null>(null);
+  const rotation = useRef(new Animated.Value(0)).current;
+  const viewedFeedPosts = useRef(new Set<string>()).current;
 
   const headers = useMemo(() => {
     const base: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -95,10 +148,17 @@ export default function App() {
   }, [token]);
 
   useEffect(() => {
+    SecureStore.getItemAsync(SESSION_STORAGE_KEY)
+      .then((savedToken) => { if (savedToken) setToken(savedToken); })
+      .catch((error) => console.warn('session restore', error));
+  }, []);
+
+  useEffect(() => {
     if (token) {
       loadCurrentProfile();
       loadFeed();
       loadStories();
+      loadAdsProgress();
     }
   }, [token]);
 
@@ -131,6 +191,7 @@ export default function App() {
       setLoading(true);
       const data = await fetchJson(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       setToken(data.token);
+      await SecureStore.setItemAsync(SESSION_STORAGE_KEY, data.token);
       setCurrentUser({ id: data.user.id, handle: '', displayName: data.user.displayName, bio: '', avatarUrl: '', isPrivate: false });
       setActiveTab('feed');
       setStatusMessage('Signed in successfully');
@@ -154,6 +215,7 @@ export default function App() {
         }),
       });
       setToken(data.token);
+      await SecureStore.setItemAsync(SESSION_STORAGE_KEY, data.token);
       setCurrentUser({ id: data.user.id, handle: '', displayName: data.user.displayName, bio: '', avatarUrl: '', isPrivate: false });
       setActiveTab('feed');
       setStatusMessage('Signed in with Google placeholder');
@@ -161,6 +223,20 @@ export default function App() {
       Alert.alert('Google error', error instanceof Error ? error.message : 'Unable to continue');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function logout() {
+    try {
+      if (token) await fetchJson('/auth/logout', { method: 'POST', headers });
+    } catch (error) {
+      console.warn('logout', error);
+    } finally {
+      await SecureStore.deleteItemAsync(SESSION_STORAGE_KEY);
+      setToken(null);
+      setCurrentUser(null);
+      setViewingProfile(null);
+      setStatusMessage(null);
     }
   }
 
@@ -173,20 +249,181 @@ export default function App() {
         displayName: data.profile.displayName ?? '',
         bio: data.profile.bio ?? '',
         avatarUrl: data.profile.avatarUrl ?? '',
+        websiteUrl: data.profile.websiteUrl ?? '',
         isPrivate: Boolean(data.profile.isPrivate),
       });
       await loadMyContent();
+      loadAdsProgress();
     } catch (error) {
       console.warn(error);
     }
   }
 
+  async function loadAdsProgress() {
+    if (!token) return;
+    try {
+      const data = await fetchJson('/roulette/ads/progress', { headers });
+      setAdsWatched(data.watched || 0);
+      setAdsRequired(data.required || 5);
+    } catch (error) {
+      console.warn('ads progress', error);
+    }
+  }
+
+  async function watchAd() {
+    if (!token) {
+      Alert.alert('Not signed in');
+      return;
+    }
+    try {
+      const data = await fetchJson('/roulette/ads/watched', { method: 'POST', headers });
+      setAdsWatched(data.watched || 0);
+      setAdsRequired(data.required || 5);
+      setStatusMessage('Ad recorded');
+    } catch (error) {
+      Alert.alert('Ad failed', error instanceof Error ? error.message : 'Unable to record ad');
+    }
+  }
+
+  async function openRoulette() {
+    if (!token) {
+      Alert.alert('Not signed in');
+      return;
+    }
+    try {
+      const data = await fetchJson('/roulette/session', { headers });
+      setRouletteSession(data);
+      setShowRoulette(true);
+      setSpinResult(null);
+    } catch (error) {
+      Alert.alert('Roulette error', error instanceof Error ? error.message : 'Unable to start session');
+    }
+  }
+
+  function animateSpin(targetDegrees = 1440, duration = 3000) {
+    rotation.setValue(0);
+    return Animated.timing(rotation, {
+      toValue: targetDegrees / 360,
+      duration,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    });
+  }
+
+  async function spinRoulette() {
+    if (!rouletteSession) return;
+    setSpinning(true);
+    try {
+      const data = await fetchJson('/roulette/spin', { method: 'POST', headers, body: JSON.stringify({ sessionId: rouletteSession.sessionId }) });
+      const visualIndex = Number(data.prize?.visualIndex ?? 0);
+      const targetDegrees = 1440 + (360 - (visualIndex * 90 + 45));
+      const anim = animateSpin(targetDegrees);
+      anim.start();
+      // wait for animation to finish
+      setTimeout(() => {
+        anim.stop();
+        setSpinning(false);
+        setSpinResult(data.prize);
+        // refresh ads progress
+        loadAdsProgress();
+      }, 3000);
+    } catch (error) {
+      setSpinning(false);
+      Alert.alert('Spin failed', error instanceof Error ? error.message : 'Unable to spin');
+    }
+  }
+
   async function loadFeed() {
+    setFeedLoading(true);
+    setFeedError(null);
     try {
       const data = await fetchJson('/feed', { headers });
       setFeed(data.feed || []);
+      const summaries = await Promise.all((data.feed || []).map(async (post: Post) => {
+        try {
+          const engagement = await fetchJson(`/content/${post.id}/engagement`, { headers });
+          return [post.id, engagement.engagement] as const;
+        } catch (error) {
+          console.warn('engagement', error);
+          return null;
+        }
+      }));
+      setEngagementByPost((current) => ({
+        ...current,
+        ...Object.fromEntries(summaries.filter((item): item is readonly [string, Engagement] => item !== null)),
+      }));
     } catch (error) {
+      setFeedError(error instanceof Error ? error.message : 'Unable to load feed');
       console.warn(error);
+    } finally {
+      setFeedLoading(false);
+    }
+  }
+
+  async function recordFeedView(postId: string, completed = false) {
+    if (!token || viewedFeedPosts.has(postId)) return;
+    viewedFeedPosts.add(postId);
+    try {
+      await fetchJson(`/feed/${postId}/view`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ completed }),
+      });
+    } catch (error) {
+      viewedFeedPosts.delete(postId);
+      console.warn('feed view', error);
+    }
+  }
+
+  async function toggleLike(postId: string) {
+    const current = engagementByPost[postId];
+    try {
+      const data = await fetchJson(`/content/${postId}/like`, {
+        method: current?.likedByViewer ? 'DELETE' : 'POST',
+        headers,
+      });
+      setEngagementByPost((items) => ({ ...items, [postId]: data.engagement }));
+    } catch (error) {
+      Alert.alert('Like failed', error instanceof Error ? error.message : 'Unable to update like');
+    }
+  }
+
+  async function toggleBookmark(postId: string) {
+    const current = engagementByPost[postId];
+    try {
+      const method = current?.bookmarkedByViewer ? 'DELETE' : 'POST';
+      const data = await fetchJson(`/content/${postId}/bookmark`, { method, headers });
+      setEngagementByPost((items) => ({ ...items, [postId]: data.engagement }));
+    } catch (error) {
+      Alert.alert('Save failed', error instanceof Error ? error.message : 'Unable to update save');
+    }
+  }
+
+  async function loadComments(postId: string) {
+    try {
+      const data = await fetchJson(`/content/${postId}/comments`, { headers });
+      setCommentsByPost((items) => ({ ...items, [postId]: data.comments || [] }));
+      setExpandedComments((items) => ({ ...items, [postId]: true }));
+    } catch (error) {
+      Alert.alert('Comments failed', error instanceof Error ? error.message : 'Unable to load comments');
+    }
+  }
+
+  async function addComment(postId: string) {
+    const body = commentDrafts[postId]?.trim();
+    if (!body) return;
+    try {
+      await fetchJson(`/content/${postId}/comments`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ body }),
+      });
+      setCommentDrafts((items) => ({ ...items, [postId]: '' }));
+      await loadComments(postId);
+      const summary = await fetchJson(`/content/${postId}/engagement`, { headers });
+      setEngagementByPost((items) => ({ ...items, [postId]: summary.engagement }));
+    } catch (error) {
+      Alert.alert('Comment failed', error instanceof Error ? error.message : 'Unable to add comment');
     }
   }
 
@@ -238,6 +475,19 @@ export default function App() {
     }
   }
 
+  async function followProfile(profileId: string) {
+    try {
+      const data = await fetchJson('/follows', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ followeeProfileId: profileId }),
+      });
+      setViewingProfile((profile) => profile ? { ...profile, relationshipStatus: data.status === 'approved' ? 'following' : 'requested' } : profile);
+    } catch (error) {
+      Alert.alert('Follow failed', error instanceof Error ? error.message : 'Unable to follow profile');
+    }
+  }
+
   async function search() {
     if (!searchQuery.trim()) {
       setSearchProfiles([]);
@@ -260,6 +510,7 @@ export default function App() {
         displayName: profileEdit.displayName,
         bio: profileEdit.bio,
         avatarUrl: profileEdit.avatarUrl,
+        websiteUrl: profileEdit.websiteUrl,
         isPrivate: profileEdit.isPrivate,
       };
       const data = await fetchJson('/profiles/me', { method: 'POST', headers, body: JSON.stringify(payload) });
@@ -449,8 +700,15 @@ export default function App() {
     <View style={styles.container}>
       <StatusBar style="light" />
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>PartnerHub</Text>
-        <Text style={styles.headerSubtitle}>Feed, stories, search, DMs, profile</Text>
+        <View style={styles.headerRow}>
+          <View>
+            <Text style={styles.headerTitle}>PartnerHub</Text>
+            <Text style={styles.headerSubtitle}>Feed, stories, search, DMs, profile</Text>
+          </View>
+          <Pressable style={styles.logoutButton} onPress={logout}>
+            <Text style={styles.logoutButtonText}>Log out</Text>
+          </Pressable>
+        </View>
       </View>
 
       <View style={styles.tabRow}>
@@ -538,27 +796,74 @@ export default function App() {
 
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Feed</Text>
+              {feedLoading ? <ActivityIndicator color="#ffcc2c" /> : null}
+              {feedError ? (
+                <View style={styles.feedState}>
+                  <Text style={styles.feedStateText}>{feedError}</Text>
+                  <Pressable style={styles.secondaryButton} onPress={loadFeed}>
+                    <Text style={styles.secondaryButtonText}>Try again</Text>
+                  </Pressable>
+                </View>
+              ) : null}
+              {!feedLoading && !feedError && feed.length === 0 ? (
+                <View style={styles.feedState}>
+                  <Text style={styles.feedStateText}>Your feed is empty.</Text>
+                  <Text style={styles.feedStateHint}>Follow creators or publish a post to get started.</Text>
+                </View>
+              ) : null}
               {feed.map((post) => (
-                <View key={post.id} style={styles.postCard}>
+                <Pressable key={post.id} style={styles.postCard} onPress={() => recordFeedView(post.id)}>
                   <View style={styles.postHeader}>
-                    <View style={styles.avatarCircle}><Text style={styles.avatarText}>{post.creatorDisplayName?.charAt(0) || 'U'}</Text></View>
-                    <View>
+                    {post.creatorAvatarUrl ? <Image source={{ uri: post.creatorAvatarUrl }} style={styles.avatarImage} /> : <View style={styles.avatarCircle}><Text style={styles.avatarText}>{post.creatorDisplayName?.charAt(0) || 'U'}</Text></View>}
+                    <View style={styles.postAuthorBlock}>
                       <Text style={styles.postAuthor}>{post.creatorDisplayName || post.creatorId}</Text>
-                      <Text style={styles.postHandle}>{post.creatorHandle || post.creatorId}</Text>
+                      <Text style={styles.postHandle}>@{post.creatorHandle || post.creatorId}</Text>
                     </View>
                   </View>
-                  <Text style={styles.postCaption}>{post.caption}</Text>
-                  {post.mediaItems?.length ? (
-                    <View style={styles.postMediaPlaceholder}>
-                      <Text style={styles.postMediaText}>{post.mediaItems[0].url}</Text>
+                  {post.mediaItems?.[0]?.url ? (
+                    <View style={styles.postMediaFrame}>
+                      <Image source={{ uri: post.mediaItems[0].url }} style={styles.postMediaImage} resizeMode="cover" />
                     </View>
                   ) : null}
                   {post.videoUrl ? (
-                    <View style={styles.postMediaPlaceholder}>
-                      <Text style={styles.postMediaText}>{post.videoUrl}</Text>
+                    <View style={styles.postMediaFrame}>
+                      <View style={styles.videoMediaTile}>
+                        <Text style={styles.videoPlayIcon}>▶</Text>
+                        <Text style={styles.postMediaText}>Video ready to play</Text>
+                        <Text style={styles.mediaUrlText}>{post.videoUrl}</Text>
+                      </View>
                     </View>
                   ) : null}
-                </View>
+                  {post.caption ? <Text style={styles.postCaption}>{post.caption}</Text> : null}
+                  <View style={styles.postFooter}>
+                    <Text style={styles.postStats}>{post.views || 0} views</Text>
+                    <Text style={styles.postStats}>{post.completions || 0} completions</Text>
+                  </View>
+                  <View style={styles.engagementRow}>
+                    <Pressable style={styles.engagementButton} onPress={() => toggleLike(post.id)}>
+                      <Text style={styles.engagementButtonText}>{engagementByPost[post.id]?.likedByViewer ? 'Liked' : 'Like'} {engagementByPost[post.id]?.likes || 0}</Text>
+                    </Pressable>
+                    <Pressable style={styles.engagementButton} onPress={() => loadComments(post.id)}>
+                      <Text style={styles.engagementButtonText}>Comments {engagementByPost[post.id]?.comments || 0}</Text>
+                    </Pressable>
+                    <Pressable style={styles.engagementButton} onPress={() => toggleBookmark(post.id)}>
+                      <Text style={styles.engagementButtonText}>{engagementByPost[post.id]?.bookmarkedByViewer ? 'Saved' : 'Save'}</Text>
+                    </Pressable>
+                  </View>
+                  {expandedComments[post.id] ? (
+                    <View style={styles.commentsPanel}>
+                      {(commentsByPost[post.id] || []).map((comment) => <Text key={comment.id} style={styles.commentText}>@{comment.accountId}: {comment.body}</Text>)}
+                      <TextInput
+                        style={styles.commentInput}
+                        placeholder="Add a comment"
+                        placeholderTextColor="#94a3b8"
+                        value={commentDrafts[post.id] || ''}
+                        onChangeText={(value) => setCommentDrafts((items) => ({ ...items, [post.id]: value }))}
+                        onSubmitEditing={() => addComment(post.id)}
+                      />
+                    </View>
+                  ) : null}
+                </Pressable>
               ))}
             </View>
           </>
@@ -655,15 +960,42 @@ export default function App() {
             <Text style={styles.sectionTitle}>{viewingProfile ? 'Profile' : 'My profile'}</Text>
             {(viewingProfile || currentUser) ? (
               <View style={styles.card}>
+                {(viewingProfile || currentUser)?.bannerUrl ? <Image source={{ uri: (viewingProfile || currentUser)?.bannerUrl || undefined }} style={styles.profileBanner} /> : null}
+                {(viewingProfile || currentUser)?.avatarUrl ? <Image source={{ uri: (viewingProfile || currentUser)?.avatarUrl || undefined }} style={styles.profileAvatar} /> : null}
                 <Text style={styles.profileName}>{(viewingProfile || currentUser)?.displayName}</Text>
-                <Text style={styles.profileHandle}>{(viewingProfile || currentUser)?.handle}</Text>
+                <Text style={styles.profileHandle}>@{(viewingProfile || currentUser)?.handle}</Text>
                 <Text style={styles.profileBio}>{(viewingProfile || currentUser)?.bio || 'No bio yet.'}</Text>
+                {(viewingProfile || currentUser)?.websiteUrl ? <Text style={styles.profileDetail}>{(viewingProfile || currentUser)?.websiteUrl}</Text> : null}
+                {(viewingProfile || currentUser)?.location ? <Text style={styles.profileDetail}>{(viewingProfile || currentUser)?.location}</Text> : null}
+                <View style={styles.profileStats}>
+                  <Text style={styles.profileStat}><Text style={styles.profileStatValue}>{(viewingProfile || currentUser)?.postCount || 0}</Text> posts</Text>
+                  <Text style={styles.profileStat}><Text style={styles.profileStatValue}>{(viewingProfile || currentUser)?.followerCount || 0}</Text> followers</Text>
+                  <Text style={styles.profileStat}><Text style={styles.profileStatValue}>{(viewingProfile || currentUser)?.followingCount || 0}</Text> following</Text>
+                </View>
                 <Text style={styles.profileMeta}>{(viewingProfile || currentUser)?.isPrivate ? 'Private account' : 'Public account'}</Text>
-                {viewingProfile ? null : (
+                {viewingProfile ? (
+                  <Pressable style={styles.secondaryButton} onPress={() => followProfile(viewingProfile.id)} disabled={viewingProfile.relationshipStatus !== 'none'}>
+                    <Text style={styles.secondaryButtonText}>{viewingProfile.relationshipStatus === 'following' ? 'Following' : viewingProfile.relationshipStatus === 'requested' ? 'Requested' : 'Follow'}</Text>
+                  </Pressable>
+                ) : (
                   <Pressable style={styles.secondaryButton} onPress={() => setEditMode(!editMode)}>
                     <Text style={styles.secondaryButtonText}>{editMode ? 'Cancel edit' : 'Edit profile'}</Text>
                   </Pressable>
                 )}
+                <View style={{ marginTop: 12 }}>
+                  <Text style={{ color: '#cbd5e1', marginBottom: 6 }}>Ads watched: {adsWatched} / {adsRequired}</Text>
+                  <View style={styles.progressBarBackground}>
+                    <View style={[styles.progressBarFill, { width: `${Math.min(100, Math.round((adsWatched / Math.max(1, adsRequired)) * 100))}%` }]} />
+                  </View>
+                  <View style={{ flexDirection: 'row', marginTop: 8 }}>
+                    <Pressable style={[styles.smallAction, { marginRight: 8 }]} onPress={watchAd}>
+                      <Text style={styles.smallActionText}>Watch ad</Text>
+                    </Pressable>
+                    <Pressable style={styles.smallAction} onPress={openRoulette}>
+                      <Text style={styles.smallActionText}>Open roulette</Text>
+                    </Pressable>
+                  </View>
+                </View>
               </View>
             ) : null}
             {editMode && currentUser ? (
@@ -672,6 +1004,7 @@ export default function App() {
                 <TextInput style={styles.input} placeholder="Display name" placeholderTextColor="#94a3b8" value={profileEdit.displayName} onChangeText={(value) => setProfileEdit((prev) => ({ ...prev, displayName: value }))} />
                 <TextInput style={styles.input} placeholder="Bio" placeholderTextColor="#94a3b8" value={profileEdit.bio} onChangeText={(value) => setProfileEdit((prev) => ({ ...prev, bio: value }))} />
                 <TextInput style={styles.input} placeholder="Avatar URL" placeholderTextColor="#94a3b8" value={profileEdit.avatarUrl} onChangeText={(value) => setProfileEdit((prev) => ({ ...prev, avatarUrl: value }))} />
+                <TextInput style={styles.input} placeholder="Website URL" placeholderTextColor="#94a3b8" value={profileEdit.websiteUrl} onChangeText={(value) => setProfileEdit((prev) => ({ ...prev, websiteUrl: value }))} />
                 <View style={styles.row}> 
                   <Pressable style={[styles.smallTab, profileEdit.isPrivate && styles.smallTabActive]} onPress={() => setProfileEdit((prev) => ({ ...prev, isPrivate: true }))}>
                     <Text style={[styles.smallTabText, profileEdit.isPrivate && styles.smallTabTextActive]}>Private</Text>
@@ -716,6 +1049,53 @@ export default function App() {
           </View>
         </View>
       ) : null}
+      {showRoulette ? (
+        <View style={styles.overlay}>
+          <View style={styles.overlayCard}>
+            <Text style={styles.sectionTitle}>Roulette</Text>
+            <Text style={{ color: '#cbd5e1', marginBottom: 8 }}>Options</Text>
+            <View style={{ maxHeight: 160, marginBottom: 12 }}>
+              {rouletteSession?.options?.map((opt, idx) => (
+                <View key={idx} style={{ paddingVertical: 6 }}>
+                  <Text style={{ color: '#e6eef0' }}>{opt.label} - {(opt.probability * 100).toFixed(opt.probability < 0.001 ? 2 : 0)}%</Text>
+                </View>
+              ))}
+            </View>
+
+            <Animated.View style={{ alignSelf: 'center', marginVertical: 12, transform: [{ rotate: rotation.interpolate({ inputRange: [0, 4], outputRange: ['0deg', '1440deg'] }) }], }}>
+              <View style={{ width: 160, height: 160, borderRadius: 80, backgroundColor: '#112218', overflow: 'hidden', borderWidth: 3, borderColor: '#ffcc2c' }}>
+                <View style={{ flex: 1, flexDirection: 'row' }}>
+                  <View style={{ flex: 1, backgroundColor: '#c84b31' }} />
+                  <View style={{ flex: 1, backgroundColor: '#e4a72c' }} />
+                </View>
+                <View style={{ flex: 1, flexDirection: 'row' }}>
+                  <View style={{ flex: 1, backgroundColor: '#287c70' }} />
+                  <View style={{ flex: 1, backgroundColor: '#5367a5' }} />
+                </View>
+                <View style={{ position: 'absolute', left: 48, top: 48, width: 64, height: 64, borderRadius: 32, backgroundColor: '#112218', alignItems: 'center', justifyContent: 'center' }}>
+                  <Text style={{ color: '#ffcc2c', fontWeight: '700' }}>{spinning ? 'Spinning...' : 'Ready'}</Text>
+                </View>
+              </View>
+            </Animated.View>
+
+            {spinResult ? (
+              <View style={{ marginVertical: 8 }}>
+                <Text style={{ color: '#cbd5e1' }}>You won:</Text>
+                <Text style={{ color: '#ffffff', fontWeight: '700' }}>{spinResult.label}</Text>
+              </View>
+            ) : null}
+
+            <View style={{ flexDirection: 'row', marginTop: 12 }}>
+              <Pressable style={[styles.primaryButton, { flex: 1, marginRight: 8 }]} onPress={spinRoulette} disabled={spinning}>
+                <Text style={styles.primaryButtonText}>{spinning ? 'Spinning...' : 'Spin'}</Text>
+              </Pressable>
+              <Pressable style={[styles.secondaryButton, { flex: 1 }]} onPress={() => { setShowRoulette(false); setRouletteSession(null); setSpinResult(null); }}>
+                <Text style={styles.secondaryButtonText}>Close</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -723,6 +1103,55 @@ export default function App() {
 const styles = StyleSheet.create({
   flex: {
     flex: 1,
+  },
+  content: {
+    flexGrow: 1,
+    padding: 20,
+    paddingBottom: 40,
+  },
+  hero: {
+    paddingTop: 36,
+    paddingBottom: 20,
+  },
+  eyebrow: {
+    color: '#6bcc61',
+    fontWeight: '700',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    marginBottom: 8,
+  },
+  title: {
+    color: '#ffffff',
+    fontSize: 30,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  subtitle: {
+    color: '#cbd5e1',
+    lineHeight: 22,
+  },
+  tabs: {
+    flexDirection: 'row',
+    backgroundColor: '#15291f',
+    borderRadius: 14,
+    overflow: 'hidden',
+    marginBottom: 14,
+  },
+  noteCard: {
+    backgroundColor: '#0f1f17',
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.07)',
+  },
+  noteTitle: {
+    color: '#ffcc2c',
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  noteText: {
+    color: '#94a3b8',
+    lineHeight: 20,
   },
   container: {
     flex: 1,
@@ -736,6 +1165,11 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255,255,255,0.08)',
   },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
   headerTitle: {
     color: '#ffcc2c',
     fontWeight: '700',
@@ -744,6 +1178,17 @@ const styles = StyleSheet.create({
   headerSubtitle: {
     color: '#cbd5e1',
     marginTop: 4,
+  },
+  logoutButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: '#6bcc61',
+    borderRadius: 10,
+  },
+  logoutButtonText: {
+    color: '#6bcc61',
+    fontWeight: '700',
   },
   tabRow: {
     flexDirection: 'row',
@@ -889,6 +1334,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 10,
   },
+  postAuthorBlock: {
+    marginLeft: 10,
+  },
+  avatarImage: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: '#172e22',
+  },
   avatarCircle: {
     width: 42,
     height: 42,
@@ -911,6 +1365,93 @@ const styles = StyleSheet.create({
   postCaption: {
     color: '#e2e8f0',
     marginBottom: 10,
+  },
+  postMediaFrame: {
+    width: '100%',
+    aspectRatio: 1,
+    borderRadius: 16,
+    overflow: 'hidden',
+    backgroundColor: '#09170f',
+    marginBottom: 12,
+  },
+  postMediaImage: {
+    width: '100%',
+    height: '100%',
+  },
+  videoMediaTile: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+    backgroundColor: '#172e22',
+  },
+  videoPlayIcon: {
+    color: '#ffcc2c',
+    fontSize: 36,
+    marginBottom: 8,
+  },
+  mediaUrlText: {
+    color: '#94a3b8',
+    fontSize: 11,
+    textAlign: 'center',
+    marginTop: 8,
+  },
+  postFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 4,
+  },
+  postStats: {
+    color: '#94a3b8',
+    fontSize: 12,
+  },
+  engagementRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 12,
+  },
+  engagementButton: {
+    paddingVertical: 6,
+    paddingHorizontal: 5,
+  },
+  engagementButtonText: {
+    color: '#ffcc2c',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  commentsPanel: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.08)',
+  },
+  commentText: {
+    color: '#d1d5db',
+    fontSize: 12,
+    marginBottom: 6,
+  },
+  commentInput: {
+    borderWidth: 1,
+    borderColor: '#1f3328',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    color: '#f8fafc',
+    backgroundColor: '#09170f',
+    marginTop: 4,
+  },
+  feedState: {
+    alignItems: 'center',
+    paddingVertical: 24,
+  },
+  feedStateText: {
+    color: '#e6eef0',
+    textAlign: 'center',
+  },
+  feedStateHint: {
+    color: '#94a3b8',
+    textAlign: 'center',
+    marginTop: 6,
   },
   postMediaPlaceholder: {
     backgroundColor: '#09170f',
@@ -977,6 +1518,21 @@ const styles = StyleSheet.create({
     fontSize: 18,
     marginBottom: 4,
   },
+  profileBanner: {
+    width: '100%',
+    height: 110,
+    borderRadius: 14,
+    marginBottom: 12,
+    backgroundColor: '#172e22',
+  },
+  profileAvatar: {
+    width: 82,
+    height: 82,
+    borderRadius: 41,
+    borderWidth: 3,
+    borderColor: '#ffcc2c',
+    marginBottom: 10,
+  },
   profileHandle: {
     color: '#94a3b8',
     marginBottom: 8,
@@ -985,12 +1541,50 @@ const styles = StyleSheet.create({
     color: '#d1d5db',
     marginBottom: 8,
   },
+  profileDetail: {
+    color: '#6bcc61',
+    marginBottom: 5,
+  },
+  profileStats: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginVertical: 12,
+  },
+  profileStat: {
+    color: '#94a3b8',
+    fontSize: 12,
+  },
+  profileStatValue: {
+    color: '#ffffff',
+    fontWeight: '700',
+  },
   profileMeta: {
     color: '#94a3b8',
     marginBottom: 10,
   },
+  progressBarBackground: {
+    height: 10,
+    backgroundColor: '#0b1a12',
+    borderRadius: 6,
+    overflow: 'hidden',
+  },
+  progressBarFill: {
+    height: 10,
+    backgroundColor: '#ffcc2c',
+  },
+  smallAction: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: '#6bcc61',
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  smallActionText: {
+    color: '#07110a',
+    fontWeight: '700',
+  },
   overlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.75)',
     justifyContent: 'center',
     alignItems: 'center',

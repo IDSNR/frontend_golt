@@ -75,8 +75,9 @@ AUTH_PASSWORD_SALT=change-me-in-production
 
 1. The Expo app sends auth requests to the FastAPI backend.
 2. The backend hashes passwords with SHA-256 using a salt from the environment.
-3. The app stores the returned token locally in memory for the current session.
-4. Google auth is currently a placeholder path that is ready to swap for a real OAuth provider once credentials are available.
+3. The app stores the returned session token in Expo SecureStore and restores it on the next launch.
+4. Logout calls the backend revocation endpoint and removes the local token.
+5. Google auth is currently a placeholder path that is ready to swap for a real OAuth provider once credentials are available.
 
 ## Next steps
 

@@ -35,7 +35,7 @@ Notifications.setNotificationHandler({
   }),
 });
 
-type Tab = 'feed' | 'search' | 'dms' | 'profile';
+type Tab = 'feed' | 'search' | 'groups' | 'dms' | 'profile';
 
 type Post = {
   id: string;
@@ -90,6 +90,20 @@ type Thread = {
   participantIds: string[];
   lastMessage: string;
   updatedAt: string;
+};
+
+type Group = {
+  id: string;
+  ownerId: string;
+  name: string;
+  description?: string | null;
+  isPrivate: boolean;
+  created_at: string;
+};
+
+type GroupMember = {
+  accountId: string;
+  role: 'owner' | 'member' | 'pending';
 };
 
 type RouletteOption = {
@@ -161,6 +175,13 @@ export default function App() {
   const [searchPosts, setSearchPosts] = useState<Post[]>([]);
   const [threads, setThreads] = useState<Thread[]>([]);
   const [selectedThread, setSelectedThread] = useState<any | null>(null);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [groupsLoading, setGroupsLoading] = useState(false);
+  const [selectedGroup, setSelectedGroup] = useState<Group | null>(null);
+  const [selectedGroupMembers, setSelectedGroupMembers] = useState<GroupMember[]>([]);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [newGroupDescription, setNewGroupDescription] = useState('');
+  const [newGroupPrivate, setNewGroupPrivate] = useState(false);
   const [viewingProfile, setViewingProfile] = useState<Profile | null>(null);
   const [viewingProfilePosts, setViewingProfilePosts] = useState<Post[]>([]);
   const [profileContent, setProfileContent] = useState<Post[]>([]);
@@ -186,6 +207,10 @@ export default function App() {
   const [spinResult, setSpinResult] = useState<any | null>(null);
   const rotation = useRef(new Animated.Value(0)).current;
   const viewedFeedPosts = useRef(new Set<string>()).current;
+  const selectedGroupMembership = useMemo(
+    () => selectedGroupMembers.find((member) => member.accountId === currentUser?.id),
+    [selectedGroupMembers, currentUser?.id],
+  );
 
   const headers = useMemo(() => {
     const base: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -217,6 +242,9 @@ export default function App() {
     }
     if (token && activeTab === 'dms') {
       loadThreads();
+    }
+    if (token && activeTab === 'groups') {
+      loadGroups();
     }
   }, [activeTab, token]);
 
@@ -644,6 +672,84 @@ export default function App() {
     }
   }
 
+  async function loadGroups() {
+    setGroupsLoading(true);
+    try {
+      const data = await fetchJson('/groups', { headers });
+      setGroups(data.groups || []);
+    } catch (error) {
+      Alert.alert('Community error', error instanceof Error ? error.message : 'Unable to load communities');
+    } finally {
+      setGroupsLoading(false);
+    }
+  }
+
+  async function loadGroup(groupId: string) {
+    try {
+      const data = await fetchJson(`/groups/${groupId}`, { headers });
+      setSelectedGroup(data.group);
+      setSelectedGroupMembers(data.members || []);
+    } catch (error) {
+      Alert.alert('Community error', error instanceof Error ? error.message : 'Unable to load this community');
+    }
+  }
+
+  async function createGroup() {
+    if (!newGroupName.trim()) {
+      Alert.alert('Community name required', 'Give the community a name before creating it.');
+      return;
+    }
+    try {
+      const data = await fetchJson('/groups', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          name: newGroupName.trim(),
+          description: newGroupDescription.trim() || null,
+          isPrivate: newGroupPrivate,
+        }),
+      });
+      setNewGroupName('');
+      setNewGroupDescription('');
+      setNewGroupPrivate(false);
+      setStatusMessage('Community created');
+      await loadGroups();
+      await loadGroup(data.group.id);
+    } catch (error) {
+      Alert.alert('Create failed', error instanceof Error ? error.message : 'Unable to create the community');
+    }
+  }
+
+  async function joinGroup(groupId: string) {
+    try {
+      const data = await fetchJson(`/groups/${groupId}/join`, { method: 'POST', headers });
+      setStatusMessage(data.status === 'pending' ? 'Join request sent' : 'Joined community');
+      await loadGroup(groupId);
+    } catch (error) {
+      Alert.alert('Join failed', error instanceof Error ? error.message : 'Unable to join the community');
+    }
+  }
+
+  async function leaveGroup(groupId: string) {
+    try {
+      await fetchJson(`/groups/${groupId}/membership`, { method: 'DELETE', headers });
+      setStatusMessage('Left community');
+      await loadGroup(groupId);
+    } catch (error) {
+      Alert.alert('Leave failed', error instanceof Error ? error.message : 'Unable to leave the community');
+    }
+  }
+
+  async function approveGroupMember(groupId: string, accountId: string) {
+    try {
+      await fetchJson(`/groups/${groupId}/members/${encodeURIComponent(accountId)}/approve`, { method: 'POST', headers });
+      setStatusMessage('Member approved');
+      await loadGroup(groupId);
+    } catch (error) {
+      Alert.alert('Approval failed', error instanceof Error ? error.message : 'Unable to approve this member');
+    }
+  }
+
   async function loadMyContent() {
     try {
       const data = await fetchJson('/content/mine', { headers });
@@ -893,7 +999,7 @@ export default function App() {
         <View style={styles.headerRow}>
           <View>
             <Text style={styles.headerTitle}>PartnerHub</Text>
-            <Text style={styles.headerSubtitle}>Feed, stories, search, DMs, profile</Text>
+            <Text style={styles.headerSubtitle}>Feed, communities, messages, profile</Text>
           </View>
           <Pressable style={styles.logoutButton} onPress={logout}>
             <Text style={styles.logoutButtonText}>Log out</Text>
@@ -904,6 +1010,7 @@ export default function App() {
       <View style={styles.tabRow}>
         {renderTabButton('feed', 'Feed')}
         {renderTabButton('search', 'Search')}
+        {renderTabButton('groups', 'Groups')}
         {renderTabButton('dms', 'DMs')}
         {renderTabButton('profile', 'Profile')}
       </View>
@@ -1094,6 +1201,124 @@ export default function App() {
                 </View>
               ))}
             </View>
+          </View>
+        ) : activeTab === 'groups' ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Communities</Text>
+            <View style={styles.card}>
+              <Text style={styles.sectionSubtitle}>Create a community</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="Community name"
+                placeholderTextColor="#94a3b8"
+                value={newGroupName}
+                onChangeText={setNewGroupName}
+              />
+              <TextInput
+                style={[styles.input, styles.multilineInput]}
+                placeholder="What is this community about?"
+                placeholderTextColor="#94a3b8"
+                value={newGroupDescription}
+                onChangeText={setNewGroupDescription}
+                multiline
+              />
+              <View style={styles.row}>
+                <Pressable
+                  style={[styles.smallTab, !newGroupPrivate && styles.smallTabActive]}
+                  onPress={() => setNewGroupPrivate(false)}
+                >
+                  <Text style={[styles.smallTabText, !newGroupPrivate && styles.smallTabTextActive]}>Open</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.smallTab, newGroupPrivate && styles.smallTabActive]}
+                  onPress={() => setNewGroupPrivate(true)}
+                >
+                  <Text style={[styles.smallTabText, newGroupPrivate && styles.smallTabTextActive]}>Approval required</Text>
+                </Pressable>
+              </View>
+              <Pressable style={styles.primaryButton} onPress={createGroup}>
+                <Text style={styles.primaryButtonText}>Create community</Text>
+              </Pressable>
+            </View>
+
+            <Text style={styles.sectionSubtitle}>Discover</Text>
+            {groupsLoading ? <ActivityIndicator color="#ffcc2c" /> : null}
+            {!groupsLoading && groups.length === 0 ? (
+              <View style={styles.feedState}>
+                <Text style={styles.feedStateText}>No communities exist yet.</Text>
+                <Text style={styles.feedStateHint}>Create the first one above.</Text>
+              </View>
+            ) : null}
+            {groups.map((group) => (
+              <Pressable key={group.id} style={styles.groupCard} onPress={() => loadGroup(group.id)}>
+                <View style={styles.groupHeaderRow}>
+                  <Text style={styles.groupName}>{group.name}</Text>
+                  <Text style={styles.privacyPill}>{group.isPrivate ? 'Approval' : 'Open'}</Text>
+                </View>
+                <Text style={styles.groupDescription}>{group.description || 'No description yet.'}</Text>
+                <Text style={styles.groupOwner}>Created by {group.ownerId}</Text>
+              </Pressable>
+            ))}
+
+            {selectedGroup ? (
+              <View style={styles.card}>
+                <View style={styles.groupHeaderRow}>
+                  <Text style={styles.sectionTitle}>{selectedGroup.name}</Text>
+                  <Pressable onPress={() => { setSelectedGroup(null); setSelectedGroupMembers([]); }}>
+                    <Text style={styles.closeText}>Close</Text>
+                  </Pressable>
+                </View>
+                <Text style={styles.groupDescription}>{selectedGroup.description || 'No description yet.'}</Text>
+                <Text style={styles.groupOwner}>
+                  {selectedGroup.isPrivate ? 'Owner approval is required to join.' : 'Anyone can join immediately.'}
+                </Text>
+                <Text style={styles.sectionSubtitle}>Members ({selectedGroupMembers.filter((member) => member.role !== 'pending').length})</Text>
+                {selectedGroupMembers.filter((member) => member.role !== 'pending').map((member) => (
+                  <View key={member.accountId} style={styles.memberRow}>
+                    <Text style={styles.memberName}>{member.accountId}</Text>
+                    <Text style={styles.memberRole}>{member.role}</Text>
+                  </View>
+                ))}
+
+                {selectedGroup.ownerId === currentUser?.id ? (
+                  <View style={styles.pendingMembers}>
+                    <Text style={styles.sectionSubtitle}>Waiting for approval</Text>
+                    {selectedGroupMembers.filter((member) => member.role === 'pending').length === 0 ? (
+                      <Text style={styles.groupDescription}>No requests are waiting.</Text>
+                    ) : null}
+                    {selectedGroupMembers.filter((member) => member.role === 'pending').map((member) => (
+                      <View key={member.accountId} style={styles.memberRow}>
+                        <Text style={styles.memberName}>{member.accountId}</Text>
+                        <Pressable
+                          style={styles.smallAction}
+                          onPress={() => approveGroupMember(selectedGroup.id, member.accountId)}
+                        >
+                          <Text style={styles.smallActionText}>Approve</Text>
+                        </Pressable>
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
+
+                {!selectedGroupMembership ? (
+                  <Pressable style={styles.primaryButton} onPress={() => joinGroup(selectedGroup.id)}>
+                    <Text style={styles.primaryButtonText}>{selectedGroup.isPrivate ? 'Request to join' : 'Join community'}</Text>
+                  </Pressable>
+                ) : selectedGroupMembership.role === 'pending' ? (
+                  <View style={styles.pendingNotice}>
+                    <Text style={styles.pendingNoticeText}>Your request is waiting for the owner.</Text>
+                  </View>
+                ) : selectedGroupMembership.role !== 'owner' ? (
+                  <Pressable style={styles.secondaryButton} onPress={() => leaveGroup(selectedGroup.id)}>
+                    <Text style={styles.secondaryButtonText}>Leave community</Text>
+                  </Pressable>
+                ) : (
+                  <View style={styles.pendingNotice}>
+                    <Text style={styles.pendingNoticeText}>You own this community.</Text>
+                  </View>
+                )}
+              </View>
+            ) : null}
           </View>
         ) : activeTab === 'dms' ? (
           <View style={styles.section}>
@@ -1413,6 +1638,7 @@ const styles = StyleSheet.create({
   tabText: {
     color: '#cbd5e1',
     fontWeight: '700',
+    fontSize: 12,
   },
   tabTextActive: {
     color: '#ffcc2c',
@@ -1466,6 +1692,10 @@ const styles = StyleSheet.create({
     color: '#f8fafc',
     backgroundColor: '#09170f',
     marginBottom: 10,
+  },
+  multilineInput: {
+    minHeight: 88,
+    textAlignVertical: 'top',
   },
   primaryButton: {
     backgroundColor: '#ffcc2c',
@@ -1789,6 +2019,82 @@ const styles = StyleSheet.create({
   },
   smallActionText: {
     color: '#07110a',
+    fontWeight: '700',
+  },
+  groupCard: {
+    backgroundColor: '#112218',
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+  },
+  groupHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  groupName: {
+    color: '#ffffff',
+    fontWeight: '700',
+    fontSize: 16,
+    flex: 1,
+  },
+  privacyPill: {
+    color: '#07110a',
+    backgroundColor: '#6bcc61',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  groupDescription: {
+    color: '#cbd5e1',
+    lineHeight: 20,
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  groupOwner: {
+    color: '#94a3b8',
+    fontSize: 12,
+    marginBottom: 10,
+  },
+  closeText: {
+    color: '#ffcc2c',
+    fontWeight: '700',
+  },
+  memberRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#09170f',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 8,
+  },
+  memberName: {
+    color: '#ffffff',
+    flex: 1,
+  },
+  memberRole: {
+    color: '#6bcc61',
+    fontSize: 12,
+    textTransform: 'capitalize',
+  },
+  pendingMembers: {
+    marginTop: 12,
+  },
+  pendingNotice: {
+    backgroundColor: '#172e22',
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 8,
+  },
+  pendingNoticeText: {
+    color: '#ffcc2c',
+    textAlign: 'center',
     fontWeight: '700',
   },
   overlay: {

@@ -6,7 +6,7 @@ The mobile app now has a lightweight authentication entry screen that supports:
 
 - Email + password sign up
 - Email + password login
-- A Google placeholder flow that is easy to replace later
+- Google OAuth sign in and account creation through Expo AuthSession
 
 The screen is intentionally structured as a first step in a larger onboarding flow, so you can add more steps later such as:
 
@@ -44,13 +44,11 @@ Login:
 }
 ```
 
-Google placeholder:
+Google ID token:
 
 ```json
 {
-  "email": "user@example.com",
-  "displayName": "Demo User",
-  "googleId": "replace-me-google-client-id"
+  "idToken": "eyJ..."
 }
 ```
 
@@ -61,7 +59,7 @@ Create a local environment file for the app before running it:
 ```bash
 # mobile-app/.env
 EXPO_PUBLIC_API_BASE_URL=http://localhost:8000
-EXPO_PUBLIC_GOOGLE_CLIENT_ID=replace-me-google-client-id
+EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID=your-google-web-client-id.apps.googleusercontent.com
 ```
 
 For the backend, you can override the password hashing salt if you want:
@@ -77,14 +75,8 @@ AUTH_PASSWORD_SALT=change-me-in-production
 2. The backend hashes passwords with SHA-256 using a salt from the environment.
 3. The app stores the returned session token in Expo SecureStore and restores it on the next launch.
 4. Logout calls the backend revocation endpoint and removes the local token.
-5. Google auth is currently a placeholder path that is ready to swap for a real OAuth provider once credentials are available.
+5. Google auth exchanges a Google ID token with the backend, which verifies it before issuing a PartnerHub session.
 
 ## Next steps
 
-When real Google credentials are ready, replace the placeholder value in the environment file and wire the app to a real OAuth flow such as:
-
-- Expo AuthSession
-- Google Sign-In for Expo
-- Firebase Auth
-
-The current layout should make it straightforward to add those pieces without redesigning the screen.
+The public web client ID is used for the AuthSession request. The Google client secret must remain server-side and is not needed for this native ID-token flow.

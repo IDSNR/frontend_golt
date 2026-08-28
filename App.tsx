@@ -2,8 +2,10 @@ import { StatusBar } from 'expo-status-bar';
 import { useEvent } from 'expo';
 import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
+import * as Google from 'expo-auth-session/providers/google';
 import * as SecureStore from 'expo-secure-store';
 import { useVideoPlayer, VideoView } from 'expo-video';
+import * as WebBrowser from 'expo-web-browser';
 import { useEffect, useMemo, useState, useRef } from 'react';
 import {
   ActivityIndicator,
@@ -22,7 +24,7 @@ import {
 } from 'react-native';
 
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || (Platform.OS === 'android' ? 'http://10.0.2.2:8000' : 'http://localhost:8000');
-const GOOGLE_PLACEHOLDER = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID || 'replace-me-google-client-id';
+const GOOGLE_WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || '';
 const SESSION_STORAGE_KEY = 'partnerhub.session';
 const REALTIME_URL = process.env.EXPO_PUBLIC_REALTIME_URL || `${API_BASE_URL.replace(/^http/, 'ws')}/realtime`;
 
@@ -34,6 +36,8 @@ Notifications.setNotificationHandler({
     shouldShowList: true,
   }),
 });
+
+WebBrowser.maybeCompleteAuthSession();
 
 type Tab = 'feed' | 'search' | 'dms' | 'profile';
 
@@ -186,6 +190,9 @@ export default function App() {
   const [spinResult, setSpinResult] = useState<any | null>(null);
   const rotation = useRef(new Animated.Value(0)).current;
   const viewedFeedPosts = useRef(new Set<string>()).current;
+  const [googleRequest, googleResponse, promptGoogleAsync] = Google.useAuthRequest({
+    webClientId: GOOGLE_WEB_CLIENT_ID,
+  });
 
   const headers = useMemo(() => {
     const base: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -378,28 +385,39 @@ export default function App() {
     }
   }
 
-  async function continueWithGoogle() {
+  async function finishGoogleAuth(idToken: string) {
     try {
       setLoading(true);
       const data = await fetchJson('/auth/google', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: email || 'google-placeholder@example.com',
-          displayName: displayName || 'Google user',
-          googleId: GOOGLE_PLACEHOLDER,
-        }),
+        body: JSON.stringify({ idToken }),
       });
       setToken(data.token);
       await SecureStore.setItemAsync(SESSION_STORAGE_KEY, data.token);
       setCurrentUser({ id: data.user.id, handle: '', displayName: data.user.displayName, bio: '', avatarUrl: '', isPrivate: false });
       setActiveTab('feed');
-      setStatusMessage('Signed in with Google placeholder');
+      setStatusMessage('Signed in with Google');
     } catch (error) {
       Alert.alert('Google error', error instanceof Error ? error.message : 'Unable to continue');
     } finally {
       setLoading(false);
     }
+  }
+
+  useEffect(() => {
+    const idToken = googleResponse?.type === 'success'
+      ? googleResponse.authentication?.idToken || googleResponse.params?.id_token
+      : null;
+    if (idToken) finishGoogleAuth(idToken);
+  }, [googleResponse]);
+
+  async function continueWithGoogle() {
+    if (!googleRequest) {
+      Alert.alert('Google unavailable', 'Google sign-in is not ready yet.');
+      return;
+    }
+    await promptGoogleAsync();
   }
 
   async function logout() {

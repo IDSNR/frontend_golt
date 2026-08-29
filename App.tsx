@@ -1,5 +1,7 @@
 import { StatusBar } from 'expo-status-bar';
 import { useEvent } from 'expo';
+import Constants from 'expo-constants';
+import * as Notifications from 'expo-notifications';
 import * as Google from 'expo-auth-session/providers/google';
 import * as SecureStore from 'expo-secure-store';
 import { useVideoPlayer, VideoView } from 'expo-video';
@@ -24,6 +26,16 @@ import {
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || (Platform.OS === 'android' ? 'http://10.0.2.2:8000' : 'http://localhost:8000');
 const GOOGLE_WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || '';
 const SESSION_STORAGE_KEY = 'partnerhub.session';
+const REALTIME_URL = process.env.EXPO_PUBLIC_REALTIME_URL || `${API_BASE_URL.replace(/^http/, 'ws')}/realtime`;
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+});
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -167,6 +179,9 @@ export default function App() {
   const [newThreadMessage, setNewThreadMessage] = useState('');
   const [newMessageText, setNewMessageText] = useState('');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [expoPushToken, setExpoPushToken] = useState<string | null>(null);
+  const [pushStatus, setPushStatus] = useState<'pending' | 'ready' | 'permission-denied' | 'needs-configuration' | 'unavailable'>('pending');
+  const [realtimeConnected, setRealtimeConnected] = useState(false);
   const [adsWatched, setAdsWatched] = useState(0);
   const [adsRequired, setAdsRequired] = useState(5);
   const [showRoulette, setShowRoulette] = useState(false);
@@ -211,6 +226,134 @@ export default function App() {
       loadThreads();
     }
   }, [activeTab, token]);
+
+  useEffect(() => {
+    if (!token || !['android', 'ios'].includes(Platform.OS)) {
+      setPushStatus(token ? 'unavailable' : 'pending');
+      return;
+    }
+
+    let cancelled = false;
+    async function registerForPushNotifications() {
+      try {
+        if (Platform.OS === 'android') {
+          await Notifications.setNotificationChannelAsync('messages', {
+            name: 'Messages',
+            importance: Notifications.AndroidImportance.HIGH,
+            vibrationPattern: [0, 250, 250, 250],
+            lightColor: '#ffcc2c',
+          });
+        }
+
+        const existingPermissions = await Notifications.getPermissionsAsync();
+        const finalPermissions = existingPermissions.status === 'granted'
+          ? existingPermissions
+          : await Notifications.requestPermissionsAsync();
+        if (finalPermissions.status !== 'granted') {
+          if (!cancelled) setPushStatus('permission-denied');
+          return;
+        }
+
+        const projectId = process.env.EXPO_PUBLIC_EAS_PROJECT_ID
+          || Constants.expoConfig?.extra?.eas?.projectId
+          || Constants.easConfig?.projectId;
+        if (!projectId) {
+          if (!cancelled) setPushStatus('needs-configuration');
+          return;
+        }
+
+        const deviceToken = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
+        await fetchJson('/notifications/push-tokens', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ token: deviceToken, platform: Platform.OS }),
+        });
+        if (!cancelled) {
+          setExpoPushToken(deviceToken);
+          setPushStatus('ready');
+        }
+      } catch (error) {
+        console.warn('push registration', error);
+        if (!cancelled) setPushStatus('unavailable');
+      }
+    }
+
+    registerForPushNotifications();
+    return () => {
+      cancelled = true;
+    };
+  }, [token, headers]);
+
+  useEffect(() => {
+    if (!token || Platform.OS === 'web') return;
+
+    const responseSubscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = response.notification.request.content.data;
+      if (data?.type === 'direct_message' && typeof data.threadId === 'string') {
+        setActiveTab('dms');
+        loadThread(data.threadId);
+      }
+    });
+
+    return () => responseSubscription.remove();
+  }, [token, headers]);
+
+  useEffect(() => {
+    if (!token) {
+      setRealtimeConnected(false);
+      return;
+    }
+
+    let socket: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let stopped = false;
+    let reconnectAttempt = 0;
+
+    function connect() {
+      if (stopped) return;
+      socket = new WebSocket(REALTIME_URL);
+      socket.onopen = () => {
+        socket?.send(JSON.stringify({ type: 'authenticate', token }));
+      };
+      socket.onmessage = (messageEvent) => {
+        try {
+          const event = JSON.parse(messageEvent.data);
+          if (event.type === 'connected') {
+            reconnectAttempt = 0;
+            setRealtimeConnected(true);
+            return;
+          }
+          if (event.type === 'direct_message' && event.message) {
+            setSelectedThread((current: any) => {
+              if (!current || current.id !== event.threadId) return current;
+              const messages = current.messages || [];
+              if (messages.some((message: any) => message.id === event.message.id)) return current;
+              return { ...current, messages: [...messages, event.message], updatedAt: event.message.created_at };
+            });
+            loadThreads();
+          }
+        } catch (error) {
+          console.warn('realtime event', error);
+        }
+      };
+      socket.onerror = () => setRealtimeConnected(false);
+      socket.onclose = () => {
+        setRealtimeConnected(false);
+        if (!stopped) {
+          const delay = Math.min(1000 * (2 ** reconnectAttempt), 30000);
+          reconnectAttempt += 1;
+          reconnectTimer = setTimeout(connect, delay);
+        }
+      };
+    }
+
+    connect();
+    return () => {
+      stopped = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      socket?.close();
+    };
+  }, [token]);
 
   async function fetchJson(path: string, options: RequestInit = {}) {
     const response = await fetch(`${API_BASE_URL}${path}`, options);
@@ -278,6 +421,17 @@ export default function App() {
   }
 
   async function logout() {
+    if (token && expoPushToken) {
+      try {
+        await fetchJson('/notifications/push-tokens', {
+          method: 'DELETE',
+          headers,
+          body: JSON.stringify({ token: expoPushToken, platform: Platform.OS }),
+        });
+      } catch (error) {
+        console.warn('push unregister', error);
+      }
+    }
     try {
       if (token) await fetchJson('/auth/logout', { method: 'POST', headers });
     } catch (error) {
@@ -288,6 +442,9 @@ export default function App() {
       setCurrentUser(null);
       setViewingProfile(null);
       setStatusMessage(null);
+      setExpoPushToken(null);
+      setPushStatus('pending');
+      setRealtimeConnected(false);
     }
   }
 
@@ -771,6 +928,9 @@ export default function App() {
 
       <View style={styles.statusBar}>
         <Text style={styles.statusText}>{statusMessage || `Signed in as ${currentUser?.displayName ?? 'you'}`}</Text>
+        <Text style={styles.connectionStatus}>
+          {realtimeConnected ? 'Live messages connected' : 'Live messages reconnecting'} · Push {pushStatus.replace('-', ' ')}
+        </Text>
       </View>
 
       <ScrollView contentContainerStyle={styles.mainContent} keyboardShouldPersistTaps="handled">
@@ -1282,6 +1442,12 @@ const styles = StyleSheet.create({
   },
   statusText: {
     color: '#94a3b8',
+  },
+  connectionStatus: {
+    color: '#6bcc61',
+    fontSize: 11,
+    marginTop: 3,
+    textTransform: 'capitalize',
   },
   mainContent: {
     padding: 20,

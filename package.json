@@ -4,6 +4,8 @@
   "main": "index.ts",
   "dependencies": {
     "expo": "~57.0.18",
+    "expo-constants": "~57.0.16",
+    "expo-notifications": "~57.0.14",
     "expo-auth-session": "^57.0.10",
     "expo-secure-store": "^57.0.2",
     "expo-status-bar": "~57.0.1",

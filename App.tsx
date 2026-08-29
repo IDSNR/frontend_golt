@@ -1,6 +1,8 @@
 import { StatusBar } from 'expo-status-bar';
+import { useEvent } from 'expo';
 import * as Google from 'expo-auth-session/providers/google';
 import * as SecureStore from 'expo-secure-store';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import * as WebBrowser from 'expo-web-browser';
 import { useEffect, useMemo, useState, useRef } from 'react';
 import {
@@ -96,6 +98,37 @@ type RouletteSession = {
   engineVersion: string;
   visualSectorCount: number;
 };
+
+type NativeVideoPlayerProps = {
+  uri: string;
+  onPlay?: () => void;
+};
+
+function NativeVideoPlayer({ uri, onPlay }: NativeVideoPlayerProps) {
+  const hasReportedPlay = useRef(false);
+  const player = useVideoPlayer(uri, (videoPlayer) => {
+    videoPlayer.loop = false;
+  });
+  const { isPlaying } = useEvent(player, 'playingChange', { isPlaying: player.playing });
+
+  useEffect(() => {
+    if (isPlaying && !hasReportedPlay.current) {
+      hasReportedPlay.current = true;
+      onPlay?.();
+    }
+  }, [isPlaying, onPlay]);
+
+  return (
+    <VideoView
+      style={styles.nativeVideo}
+      player={player}
+      nativeControls
+      contentFit="cover"
+      fullscreenOptions={{ enable: true }}
+      surfaceType={Platform.OS === 'android' ? 'textureView' : undefined}
+    />
+  );
+}
 
 export default function App() {
   const [mode, setMode] = useState<'login' | 'signup'>('signup');
@@ -838,18 +871,17 @@ export default function App() {
                       <Text style={styles.postHandle}>@{post.creatorHandle || post.creatorId}</Text>
                     </View>
                   </View>
-                  {post.mediaItems?.[0]?.url ? (
+                  {post.mediaItems?.[0]?.url && post.mediaItems[0].mediaType !== 'video' ? (
                     <View style={styles.postMediaFrame}>
                       <Image source={{ uri: post.mediaItems[0].url }} style={styles.postMediaImage} resizeMode="cover" />
                     </View>
                   ) : null}
-                  {post.videoUrl ? (
+                  {post.videoUrl || (post.mediaItems?.[0]?.mediaType === 'video' ? post.mediaItems[0].url : null) ? (
                     <View style={styles.postMediaFrame}>
-                      <View style={styles.videoMediaTile}>
-                        <Text style={styles.videoPlayIcon}>▶</Text>
-                        <Text style={styles.postMediaText}>Video ready to play</Text>
-                        <Text style={styles.mediaUrlText}>{post.videoUrl}</Text>
-                      </View>
+                      <NativeVideoPlayer
+                        uri={post.videoUrl || post.mediaItems?.[0]?.url || ''}
+                        onPlay={() => recordFeedView(post.id)}
+                      />
                     </View>
                   ) : null}
                   {post.caption ? <Text style={styles.postCaption}>{post.caption}</Text> : null}
@@ -1041,8 +1073,16 @@ export default function App() {
               {(viewingProfile ? viewingProfilePosts : profileContent).map((post) => (
                 <View key={post.id} style={styles.postCard}>
                   <Text style={styles.postCaption}>{post.caption || 'Untitled post'}</Text>
-                  {post.mediaItems?.[0]?.url ? <Text style={styles.postMediaText}>{post.mediaItems[0].url}</Text> : null}
-                  {post.videoUrl ? <Text style={styles.postMediaText}>{post.videoUrl}</Text> : null}
+                  {post.mediaItems?.[0]?.url && post.mediaItems[0].mediaType !== 'video' ? (
+                    <View style={styles.postMediaFrame}>
+                      <Image source={{ uri: post.mediaItems[0].url }} style={styles.postMediaImage} resizeMode="cover" />
+                    </View>
+                  ) : null}
+                  {post.videoUrl || (post.mediaItems?.[0]?.mediaType === 'video' ? post.mediaItems[0].url : null) ? (
+                    <View style={styles.postMediaFrame}>
+                      <NativeVideoPlayer uri={post.videoUrl || post.mediaItems?.[0]?.url || ''} />
+                    </View>
+                  ) : null}
                 </View>
               ))}
             </View>
@@ -1060,7 +1100,13 @@ export default function App() {
           <View style={styles.overlayCard}>
             <Text style={styles.sectionTitle}>Story viewer</Text>
             <Text style={styles.profileHandle}>{selectedStory.creatorId}</Text>
-            <Text style={styles.postMediaText}>{selectedStory.mediaUrl}</Text>
+            <View style={styles.storyMediaFrame}>
+              {selectedStory.mediaType === 'video' ? (
+                <NativeVideoPlayer uri={selectedStory.mediaUrl} />
+              ) : (
+                <Image source={{ uri: selectedStory.mediaUrl }} style={styles.postMediaImage} resizeMode="cover" />
+              )}
+            </View>
             <Pressable style={styles.secondaryButton} onPress={() => setSelectedStory(null)}>
               <Text style={styles.secondaryButtonText}>Close</Text>
             </Pressable>
@@ -1396,23 +1442,19 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
-  videoMediaTile: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 16,
-    backgroundColor: '#172e22',
+  nativeVideo: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#09170f',
   },
-  videoPlayIcon: {
-    color: '#ffcc2c',
-    fontSize: 36,
-    marginBottom: 8,
-  },
-  mediaUrlText: {
-    color: '#94a3b8',
-    fontSize: 11,
-    textAlign: 'center',
-    marginTop: 8,
+  storyMediaFrame: {
+    width: '100%',
+    aspectRatio: 9 / 16,
+    maxHeight: 520,
+    borderRadius: 16,
+    overflow: 'hidden',
+    backgroundColor: '#09170f',
+    marginBottom: 16,
   },
   postFooter: {
     flexDirection: 'row',

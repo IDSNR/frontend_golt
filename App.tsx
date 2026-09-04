@@ -27,6 +27,7 @@ const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || (Platform.OS === 'a
 const GOOGLE_WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || '';
 const SESSION_STORAGE_KEY = 'partnerhub.session';
 const REALTIME_URL = process.env.EXPO_PUBLIC_REALTIME_URL || `${API_BASE_URL.replace(/^http/, 'ws')}/realtime`;
+const ROULETTE_SANDBOX_ENABLED = process.env.EXPO_PUBLIC_ROULETTE_SANDBOX_ENABLED === 'true';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -238,7 +239,7 @@ export default function App() {
       loadCurrentProfile();
       loadFeed();
       loadStories();
-      loadAdsProgress();
+      if (ROULETTE_SANDBOX_ENABLED) loadAdsProgress();
     }
   }, [token]);
 
@@ -489,14 +490,14 @@ export default function App() {
         isPrivate: Boolean(data.profile.isPrivate),
       });
       await loadMyContent();
-      loadAdsProgress();
+      if (ROULETTE_SANDBOX_ENABLED) loadAdsProgress();
     } catch (error) {
       console.warn(error);
     }
   }
 
   async function loadAdsProgress() {
-    if (!token) return;
+    if (!token || !ROULETTE_SANDBOX_ENABLED) return;
     try {
       const data = await fetchJson('/roulette/ads/progress', { headers });
       setAdsWatched(data.watched || 0);
@@ -515,7 +516,7 @@ export default function App() {
       const data = await fetchJson('/roulette/ads/watched', { method: 'POST', headers });
       setAdsWatched(data.watched || 0);
       setAdsRequired(data.required || 5);
-      setStatusMessage('Ad recorded');
+      setStatusMessage('Test ad watch recorded');
     } catch (error) {
       Alert.alert('Ad failed', error instanceof Error ? error.message : 'Unable to record ad');
     }
@@ -552,7 +553,8 @@ export default function App() {
     try {
       const data = await fetchJson('/roulette/spin', { method: 'POST', headers, body: JSON.stringify({ sessionId: rouletteSession.sessionId }) });
       const visualIndex = Number(data.prize?.visualIndex ?? 0);
-      const targetDegrees = 1440 + (360 - (visualIndex * 90 + 45));
+      const sectorDegrees = 360 / Math.max(1, rouletteSession.options.length);
+      const targetDegrees = 1440 + (360 - (visualIndex * sectorDegrees + sectorDegrees / 2));
       const anim = animateSpin(targetDegrees);
       anim.start();
       // wait for animation to finish
@@ -1417,20 +1419,21 @@ export default function App() {
                     <Text style={styles.secondaryButtonText}>{editMode ? 'Cancel edit' : 'Edit profile'}</Text>
                   </Pressable>
                 )}
-                <View style={{ marginTop: 12 }}>
-                  <Text style={{ color: '#cbd5e1', marginBottom: 6 }}>Ads watched: {adsWatched} / {adsRequired}</Text>
+                {ROULETTE_SANDBOX_ENABLED ? <View style={{ marginTop: 12 }}>
+                  <Text style={styles.sectionSubtitle}>Spin Lab (test only)</Text>
+                  <Text style={{ color: '#94a3b8', marginBottom: 6 }}>No cash or real prizes. Test ad watches: {adsWatched} / {adsRequired}</Text>
                   <View style={styles.progressBarBackground}>
                     <View style={[styles.progressBarFill, { width: `${Math.min(100, Math.round((adsWatched / Math.max(1, adsRequired)) * 100))}%` }]} />
                   </View>
                   <View style={{ flexDirection: 'row', marginTop: 8 }}>
                     <Pressable style={[styles.smallAction, { marginRight: 8 }]} onPress={watchAd}>
-                      <Text style={styles.smallActionText}>Watch ad</Text>
+                      <Text style={styles.smallActionText}>Add test watch</Text>
                     </Pressable>
                     <Pressable style={styles.smallAction} onPress={openRoulette}>
-                      <Text style={styles.smallActionText}>Open roulette</Text>
+                      <Text style={styles.smallActionText}>Open Spin Lab</Text>
                     </Pressable>
                   </View>
-                </View>
+                </View> : null}
               </View>
             ) : null}
             {editMode && currentUser ? (
@@ -1501,8 +1504,8 @@ export default function App() {
       {showRoulette ? (
         <View style={styles.overlay}>
           <View style={styles.overlayCard}>
-            <Text style={styles.sectionTitle}>Roulette</Text>
-            <Text style={{ color: '#cbd5e1', marginBottom: 8 }}>Options</Text>
+            <Text style={styles.sectionTitle}>Spin Lab</Text>
+            <Text style={{ color: '#cbd5e1', marginBottom: 8 }}>Sandbox odds — no cash or real-world value</Text>
             <View style={{ maxHeight: 160, marginBottom: 12 }}>
               {rouletteSession?.options?.map((opt, idx) => (
                 <View key={idx} style={{ paddingVertical: 6 }}>
@@ -1514,12 +1517,9 @@ export default function App() {
             <Animated.View style={{ alignSelf: 'center', marginVertical: 12, transform: [{ rotate: rotation.interpolate({ inputRange: [0, 4], outputRange: ['0deg', '1440deg'] }) }], }}>
               <View style={{ width: 160, height: 160, borderRadius: 80, backgroundColor: '#112218', overflow: 'hidden', borderWidth: 3, borderColor: '#ffcc2c' }}>
                 <View style={{ flex: 1, flexDirection: 'row' }}>
-                  <View style={{ flex: 1, backgroundColor: '#c84b31' }} />
-                  <View style={{ flex: 1, backgroundColor: '#e4a72c' }} />
-                </View>
-                <View style={{ flex: 1, flexDirection: 'row' }}>
-                  <View style={{ flex: 1, backgroundColor: '#287c70' }} />
-                  <View style={{ flex: 1, backgroundColor: '#5367a5' }} />
+                  {['#c84b31', '#e4a72c', '#287c70', '#5367a5', '#7c3aed'].map((color) => (
+                    <View key={color} style={{ flex: 1, backgroundColor: color }} />
+                  ))}
                 </View>
                 <View style={{ position: 'absolute', left: 48, top: 48, width: 64, height: 64, borderRadius: 32, backgroundColor: '#112218', alignItems: 'center', justifyContent: 'center' }}>
                   <Text style={{ color: '#ffcc2c', fontWeight: '700' }}>{spinning ? 'Spinning...' : 'Ready'}</Text>
@@ -1529,7 +1529,7 @@ export default function App() {
 
             {spinResult ? (
               <View style={{ marginVertical: 8 }}>
-                <Text style={{ color: '#cbd5e1' }}>You won:</Text>
+                <Text style={{ color: '#cbd5e1' }}>Test result:</Text>
                 <Text style={{ color: '#ffffff', fontWeight: '700' }}>{spinResult.label}</Text>
               </View>
             ) : null}

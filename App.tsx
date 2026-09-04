@@ -40,6 +40,7 @@ Notifications.setNotificationHandler({
 WebBrowser.maybeCompleteAuthSession();
 
 type Tab = 'feed' | 'search' | 'groups' | 'dms' | 'profile';
+type FeedMode = 'for_you' | 'following';
 
 type Post = {
   id: string;
@@ -165,6 +166,7 @@ export default function App() {
   const [token, setToken] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<Profile | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>('feed');
+  const [feedMode, setFeedMode] = useState<FeedMode>('for_you');
   const [feed, setFeed] = useState<Post[]>([]);
   const [feedLoading, setFeedLoading] = useState(false);
   const [feedError, setFeedError] = useState<string | null>(null);
@@ -253,7 +255,7 @@ export default function App() {
     if (token && activeTab === 'groups') {
       loadGroups();
     }
-  }, [activeTab, token]);
+  }, [activeTab, token, feedMode]);
 
   useEffect(() => {
     if (!token || !['android', 'ios'].includes(Platform.OS)) {
@@ -573,7 +575,7 @@ export default function App() {
     setFeedLoading(true);
     setFeedError(null);
     try {
-      const data = await fetchJson('/feed', { headers });
+      const data = await fetchJson(`/feed?mode=${feedMode}`, { headers });
       setFeed(data.feed || []);
       const summaries = await Promise.all((data.feed || []).map(async (post: Post) => {
         try {
@@ -1114,6 +1116,27 @@ export default function App() {
 
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Feed</Text>
+              <View style={styles.row}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: feedMode === 'for_you' }}
+                  style={[styles.smallTab, feedMode === 'for_you' && styles.smallTabActive]}
+                  onPress={() => setFeedMode('for_you')}
+                >
+                  <Text style={[styles.smallTabText, feedMode === 'for_you' && styles.smallTabTextActive]}>For you</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: feedMode === 'following' }}
+                  style={[styles.smallTab, feedMode === 'following' && styles.smallTabActive]}
+                  onPress={() => setFeedMode('following')}
+                >
+                  <Text style={[styles.smallTabText, feedMode === 'following' && styles.smallTabTextActive]}>Following</Text>
+                </Pressable>
+              </View>
+              <Text style={styles.feedStateHint}>
+                {feedMode === 'following' ? 'Newest posts from creators you follow.' : 'Public posts you can discover and control.'}
+              </Text>
               {feedLoading ? <ActivityIndicator color="#ffcc2c" /> : null}
               {feedError ? (
                 <View style={styles.feedState}>
@@ -1126,7 +1149,9 @@ export default function App() {
               {!feedLoading && !feedError && feed.length === 0 ? (
                 <View style={styles.feedState}>
                   <Text style={styles.feedStateText}>Your feed is empty.</Text>
-                  <Text style={styles.feedStateHint}>Follow creators or publish a post to get started.</Text>
+                  <Text style={styles.feedStateHint}>
+                    {feedMode === 'following' ? 'Follow a creator to see their newest posts here.' : 'Publish a post or check again when creators have shared something.'}
+                  </Text>
                 </View>
               ) : null}
               {feed.map((post) => (

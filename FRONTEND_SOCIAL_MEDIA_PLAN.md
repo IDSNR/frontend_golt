@@ -17,10 +17,11 @@ This document describes the next phase of the mobile frontend after auth and onb
 ## Existing state
 
 Frontend currently has:
-- `mobile-app/App.tsx`: signup/login screen and placeholder Google auth flow.
-- `mobile-app/App.tsx`: feed screen connected to `GET /feed`, with backend image URLs rendered and video URL records displayed in a video-ready tile.
-- `mobile-app/App.tsx`: Phase A profile and engagement controls for social counts, follow/request state, likes, saves, comments, and shares.
-- `mobile-app/README-authentication.md`: backend contract for auth routes.
+- `App.tsx`: signup/login, session restoration, and the existing Google auth path.
+- `App.tsx`: feed, search, community, direct-message, and profile sections.
+- `App.tsx`: native mobile video playback, story viewing, engagement, follow state, profile editing, push registration state, and live-message connection state.
+- `App.tsx`: Amazon-first physical-product cards and a native browser handoff that does not render Amazon inside an embedded WebView.
+- `README-authentication.md`: backend contract for auth routes.
 
 Backend currently exposes:
 - `POST /auth/register`
@@ -34,6 +35,24 @@ Backend currently exposes:
 - `GET /stories/by/{creator_id}`
 - `POST /stories`
 - `POST /stories/{story_id}/view`
+- `POST /content/{content_id}/affiliate-links`
+- `POST /affiliate-links/{offer_id}/open`
+- `GET /content/{content_id}/affiliate-attribution`
+
+## Physical product affiliate flow
+
+Creators can optionally attach one or more physical products to a post. Amazon is the first retailer, but the frontend uses a provider field and a shared product-card shape so later retailers can be added without replacing the feed.
+
+The current flow works as follows:
+
+1. The creator publishes a media post and optionally supplies a product title plus a direct Amazon product-details URL.
+2. The backend creates the post first, then creates the affiliate offer owned by that creator. If the offer fails validation, the post stays live and the app explains that the product was not attached.
+3. The feed returns safe card data, not the stored outbound URL.
+4. The card identifies the item as a physical product sold on Amazon, states that Amazon controls price, checkout, delivery, and returns, and displays the required affiliate disclosure.
+5. A deliberate tap asks the backend to record the click and return the approved destination. The app opens it with the device's native browser surface or Amazon app. It does not use an embedded WebView.
+6. Clicks remain separate from confirmed purchases. Creator commission stays at zero until Amazon reports confirm an eligible order and Golt has an approved attribution policy.
+
+Before production, Golt still needs Amazon Associates approval for the mobile app, Golt-owned marketplace tracking IDs, a founder-approved creator commission policy, and a compliant report-reconciliation method. The app must not promise cashback to viewers, add a markup to Amazon's price, or describe creator commission as a processing fee or tip.
 
 Backend data model references:
 - `backend/app/modules/content/service.py`: post service expects `videoUrl` or `mediaItems`.
@@ -366,8 +385,7 @@ Based on `style.md`:
 
 ## Next step
 
-1. Review this plan and approve the major design direction.
-2. Confirm whether you want the backend to support:
-   - a simple relay upload flow, or
-   - direct signed uploads to a storage service.
-3. Then I will implement the frontend screens and the backend storage handling accordingly.
+1. Provision production object storage and a CDN, then replace local media URLs with signed upload and delivery URLs.
+2. Complete Amazon Associates mobile-app approval and configure the Golt-owned tracking ID only after approval.
+3. Decide the creator share of net, confirmed affiliate income and how reversals will be handled.
+4. Split the monolithic `App.tsx` into maintained screens and components before adding more major UI surfaces.

@@ -62,6 +62,12 @@ EXPO_PUBLIC_API_BASE_URL=http://localhost:8000
 EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID=your-google-web-client-id.apps.googleusercontent.com
 ```
 
+When the app is opened with Expo Go on a phone, it automatically replaces a
+`localhost` API address with the computer address advertised by Expo. Keep the
+phone and computer on the same network and start the backend on port 8000. An
+explicit non-local address, such as a staging or production API, is never
+rewritten.
+
 For the backend, you can override the password hashing salt if you want:
 
 ```bash

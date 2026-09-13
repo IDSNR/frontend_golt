@@ -23,10 +23,42 @@ import {
   View,
 } from 'react-native';
 
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || (Platform.OS === 'android' ? 'http://10.0.2.2:8000' : 'http://localhost:8000');
+function expoDevelopmentHost(): string | null {
+  const hostUri = Constants.expoConfig?.hostUri;
+  if (!hostUri) return null;
+
+  const authority = hostUri.replace(/^https?:\/\//i, '').split('/')[0];
+  const host = authority.startsWith('[')
+    ? authority.slice(1, authority.indexOf(']'))
+    : authority.split(':')[0];
+
+  if (!host || ['localhost', '127.0.0.1', '0.0.0.0'].includes(host.toLowerCase())) return null;
+  return host;
+}
+
+function resolveDevelopmentUrl(configuredUrl: string | undefined, fallbackPort: number): string {
+  const configured = configuredUrl?.trim();
+  const developmentHost = Platform.OS === 'web' ? null : expoDevelopmentHost();
+
+  if (configured) {
+    const localUrl = configured.match(/^(https?:\/\/|wss?:\/\/)(localhost|127\.0\.0\.1)(:\d+)?(\/.*)?$/i);
+    if (localUrl && developmentHost) {
+      return `${localUrl[1]}${developmentHost}${localUrl[3] || ''}${localUrl[4] || ''}`.replace(/\/$/, '');
+    }
+    return configured.replace(/\/$/, '');
+  }
+
+  if (developmentHost) return `http://${developmentHost}:${fallbackPort}`;
+  if (Platform.OS === 'android') return `http://10.0.2.2:${fallbackPort}`;
+  return `http://localhost:${fallbackPort}`;
+}
+
+const API_BASE_URL = resolveDevelopmentUrl(process.env.EXPO_PUBLIC_API_BASE_URL, 8000);
 const GOOGLE_WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || '';
 const SESSION_STORAGE_KEY = 'partnerhub.session';
-const REALTIME_URL = process.env.EXPO_PUBLIC_REALTIME_URL || `${API_BASE_URL.replace(/^http/, 'ws')}/realtime`;
+const REALTIME_URL = process.env.EXPO_PUBLIC_REALTIME_URL
+  ? resolveDevelopmentUrl(process.env.EXPO_PUBLIC_REALTIME_URL, 8000)
+  : `${API_BASE_URL.replace(/^http/, 'ws')}/realtime`;
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({

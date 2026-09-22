@@ -23,10 +23,42 @@ import {
   View,
 } from 'react-native';
 
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || (Platform.OS === 'android' ? 'http://10.0.2.2:8000' : 'http://localhost:8000');
+function expoDevelopmentHost(): string | null {
+  const hostUri = Constants.expoConfig?.hostUri;
+  if (!hostUri) return null;
+
+  const authority = hostUri.replace(/^https?:\/\//i, '').split('/')[0];
+  const host = authority.startsWith('[')
+    ? authority.slice(1, authority.indexOf(']'))
+    : authority.split(':')[0];
+
+  if (!host || ['localhost', '127.0.0.1', '0.0.0.0'].includes(host.toLowerCase())) return null;
+  return host;
+}
+
+function resolveDevelopmentUrl(configuredUrl: string | undefined, fallbackPort: number): string {
+  const configured = configuredUrl?.trim();
+  const developmentHost = Platform.OS === 'web' ? null : expoDevelopmentHost();
+
+  if (configured) {
+    const localUrl = configured.match(/^(https?:\/\/|wss?:\/\/)(localhost|127\.0\.0\.1)(:\d+)?(\/.*)?$/i);
+    if (localUrl && developmentHost) {
+      return `${localUrl[1]}${developmentHost}${localUrl[3] || ''}${localUrl[4] || ''}`.replace(/\/$/, '');
+    }
+    return configured.replace(/\/$/, '');
+  }
+
+  if (developmentHost) return `http://${developmentHost}:${fallbackPort}`;
+  if (Platform.OS === 'android') return `http://10.0.2.2:${fallbackPort}`;
+  return `http://localhost:${fallbackPort}`;
+}
+
+const API_BASE_URL = resolveDevelopmentUrl(process.env.EXPO_PUBLIC_API_BASE_URL, 8000);
 const GOOGLE_WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || '';
 const SESSION_STORAGE_KEY = 'partnerhub.session';
-const REALTIME_URL = process.env.EXPO_PUBLIC_REALTIME_URL || `${API_BASE_URL.replace(/^http/, 'ws')}/realtime`;
+const REALTIME_URL = process.env.EXPO_PUBLIC_REALTIME_URL
+  ? resolveDevelopmentUrl(process.env.EXPO_PUBLIC_REALTIME_URL, 8000)
+  : `${API_BASE_URL.replace(/^http/, 'ws')}/realtime`;
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -41,6 +73,18 @@ WebBrowser.maybeCompleteAuthSession();
 
 type Tab = 'feed' | 'search' | 'groups' | 'dms' | 'profile';
 
+type AffiliateOffer = {
+  id: string;
+  contentId: string;
+  provider: 'amazon';
+  merchantName: string;
+  marketplace: string;
+  title: string;
+  disclosure: string;
+  priceNotice: string;
+  commissionTrackingActive: boolean;
+};
+
 type Post = {
   id: string;
   creatorId: string;
@@ -53,6 +97,7 @@ type Post = {
   created_at?: string;
   views?: number;
   completions?: number;
+  affiliateOffers?: AffiliateOffer[];
 };
 
 type Engagement = {
@@ -194,6 +239,8 @@ export default function App() {
   const [newPostUrl, setNewPostUrl] = useState('');
   const [newPostCaption, setNewPostCaption] = useState('');
   const [newPostType, setNewPostType] = useState<'image' | 'video'>('image');
+  const [newProductTitle, setNewProductTitle] = useState('');
+  const [newProductUrl, setNewProductUrl] = useState('');
   const [newStoryUrl, setNewStoryUrl] = useState('');
   const [newStoryType, setNewStoryType] = useState<'image' | 'video'>('image');
   const [newThreadRecipient, setNewThreadRecipient] = useState('');
@@ -611,6 +658,29 @@ export default function App() {
     }
   }
 
+  async function openAffiliateOffer(offer: AffiliateOffer) {
+    try {
+      const data = await fetchJson(`/affiliate-links/${offer.id}/open`, {
+        method: 'POST',
+        headers,
+      });
+      const opened = data.open;
+      if (opened.testMode) {
+        Alert.alert('Amazon link preview', opened.notice);
+      }
+      await WebBrowser.openBrowserAsync(opened.destinationUrl, {
+        toolbarColor: '#0b1f14',
+        controlsColor: '#ffcc2c',
+        dismissButtonStyle: 'close',
+        enableBarCollapsing: true,
+        showTitle: true,
+        presentationStyle: WebBrowser.WebBrowserPresentationStyle.PAGE_SHEET,
+      });
+    } catch (error) {
+      Alert.alert('Product link unavailable', error instanceof Error ? error.message : 'Unable to open this Amazon product.');
+    }
+  }
+
   async function toggleLike(postId: string) {
     const current = engagementByPost[postId];
     try {
@@ -842,6 +912,12 @@ export default function App() {
       return;
     }
 
+    if ((newProductUrl.trim() && !newProductTitle.trim()) || (!newProductUrl.trim() && newProductTitle.trim())) {
+      Alert.alert('Product error', 'Add both the Amazon product title and its direct product link, or leave both empty.');
+      return;
+    }
+
+    let createdPost: Post;
     try {
       const payload: any = { caption: newPostCaption || '' };
       if (newPostType === 'video') {
@@ -849,15 +925,41 @@ export default function App() {
       } else {
         payload.mediaItems = [{ id: 'new-media', mediaType: 'image', url: newPostUrl.trim(), orderIndex: 0 }];
       }
-      await fetchJson('/content', { method: 'POST', headers, body: JSON.stringify(payload) });
-      setNewPostUrl('');
-      setNewPostCaption('');
-      setStatusMessage('Post created');
-      await loadFeed();
-      await loadMyContent();
+      const data = await fetchJson('/content', { method: 'POST', headers, body: JSON.stringify(payload) });
+      createdPost = data.content;
     } catch (error) {
       Alert.alert('Post failed', error instanceof Error ? error.message : 'Unable to create post');
+      return;
     }
+
+    let productAttached = false;
+    if (newProductUrl.trim()) {
+      try {
+        await fetchJson(`/content/${createdPost.id}/affiliate-links`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            provider: 'amazon',
+            title: newProductTitle.trim(),
+            productUrl: newProductUrl.trim(),
+          }),
+        });
+        productAttached = true;
+      } catch (error) {
+        Alert.alert(
+          'Post created without product',
+          error instanceof Error ? error.message : 'The post is live, but the Amazon product could not be attached.',
+        );
+      }
+    }
+
+    setNewPostUrl('');
+    setNewPostCaption('');
+    setNewProductTitle('');
+    setNewProductUrl('');
+    setStatusMessage(productAttached ? 'Post and Amazon product created' : 'Post created');
+    await loadFeed();
+    await loadMyContent();
   }
 
   async function createStory() {
@@ -1082,6 +1184,25 @@ export default function App() {
                   value={newPostCaption}
                   onChangeText={setNewPostCaption}
                 />
+                <Text style={styles.optionalFieldLabel}>Optional physical product</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Product title"
+                  placeholderTextColor="#94a3b8"
+                  value={newProductTitle}
+                  onChangeText={setNewProductTitle}
+                />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Direct Amazon product URL"
+                  placeholderTextColor="#94a3b8"
+                  value={newProductUrl}
+                  onChangeText={setNewProductUrl}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="url"
+                />
+                <Text style={styles.productHelperText}>Golt removes personal tracking tags. Amazon controls the final price, checkout, delivery, and returns.</Text>
                 <Pressable style={styles.primaryButton} onPress={createPost}>
                   <Text style={styles.primaryButtonText}>Post</Text>
                 </Pressable>
@@ -1152,6 +1273,24 @@ export default function App() {
                     </View>
                   ) : null}
                   {post.caption ? <Text style={styles.postCaption}>{post.caption}</Text> : null}
+                  {post.affiliateOffers?.map((offer) => (
+                    <View key={offer.id} style={styles.productCard}>
+                      <Text style={styles.productEyebrow}>Physical product · Sold on {offer.merchantName}</Text>
+                      <Text style={styles.productTitle}>{offer.title}</Text>
+                      <Text style={styles.productNotice}>{offer.priceNotice}</Text>
+                      <Text style={styles.affiliateDisclosure}>{offer.disclosure}</Text>
+                      <Pressable
+                        style={styles.productButton}
+                        onPress={(event) => {
+                          event.stopPropagation();
+                          openAffiliateOffer(offer);
+                        }}
+                      >
+                        <Text style={styles.productButtonText}>View on Amazon</Text>
+                      </Pressable>
+                      {!offer.commissionTrackingActive ? <Text style={styles.previewLabel}>Preview mode · commission tracking is off</Text> : null}
+                    </View>
+                  ))}
                   <View style={styles.postFooter}>
                     <Text style={styles.postStats}>{post.views || 0} views</Text>
                     <Text style={styles.postStats}>{post.completions || 0} completions</Text>
@@ -1825,6 +1964,67 @@ const styles = StyleSheet.create({
   postCaption: {
     color: '#e2e8f0',
     marginBottom: 10,
+  },
+  optionalFieldLabel: {
+    color: '#d1d5db',
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: 6,
+    marginBottom: 8,
+  },
+  productHelperText: {
+    color: '#94a3b8',
+    fontSize: 12,
+    lineHeight: 17,
+    marginBottom: 12,
+  },
+  productCard: {
+    backgroundColor: '#0b1a11',
+    borderWidth: 1,
+    borderColor: '#2f4b39',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 12,
+  },
+  productEyebrow: {
+    color: '#6bcc61',
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  productTitle: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  productNotice: {
+    color: '#cbd5e1',
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  affiliateDisclosure: {
+    color: '#94a3b8',
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 8,
+  },
+  productButton: {
+    backgroundColor: '#ffcc2c',
+    borderRadius: 12,
+    alignItems: 'center',
+    paddingVertical: 11,
+    marginTop: 12,
+  },
+  productButtonText: {
+    color: '#07110a',
+    fontWeight: '800',
+  },
+  previewLabel: {
+    color: '#fbbf24',
+    fontSize: 11,
+    marginTop: 8,
+    textAlign: 'center',
   },
   postMediaFrame: {
     width: '100%',

@@ -59,8 +59,23 @@ Create a local environment file for the app before running it:
 ```bash
 # mobile-app/.env
 EXPO_PUBLIC_API_BASE_URL=http://localhost:8000
+EXPO_PUBLIC_REALTIME_URL=ws://localhost:8000/realtime
 EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID=your-google-web-client-id.apps.googleusercontent.com
+EXPO_PUBLIC_EAS_PROJECT_ID=your-eas-project-id
 ```
+
+When the app is opened with Expo Go on a phone, it automatically replaces a
+`localhost` API address with the computer address advertised by Expo. Keep the
+phone and computer on the same network and start the backend on port 8000. An
+explicit non-local address, such as a staging or production API, is never
+rewritten.
+
+Use `.env.example` as the starting point. The local `.env` file is ignored by
+Git. All `EXPO_PUBLIC_*` values are visible in the compiled app, so they must
+never contain private credentials.
+
+For phone testing, production builds, push setup, and EAS build commands, read
+`MOBILE_EXPO_COMPLETE_GUIDE.md`.
 
 For the backend, you can override the password hashing salt if you want:
 

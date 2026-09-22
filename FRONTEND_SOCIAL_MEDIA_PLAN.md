@@ -10,6 +10,15 @@ This document describes the next phase of the mobile frontend after auth and onb
 - Keep major style decisions on hold until you approve them.
 - Keep media link handling ready for the frontend, but do not hard-code real storage links yet.
 
+## Verified running state — 2026-09-13
+
+- The Android/Expo application bundles successfully with all current screens and native video playback.
+- A live local server check completed signup, profile loading, publishing, feed delivery, an Amazon product-card click, community creation/joining, and two-way direct messaging.
+- The automated server checks for WebSocket delivery and push-token handling pass.
+- Expo Go now replaces a `localhost` API or realtime address with the computer address advertised by Expo, so a phone on the same network can reach the development server.
+- The repository now has matching `com.golt.mobile` identities for iOS and Android, checked-in EAS simulator/preview/production profiles, and a safe `.env.example`; the developer's real `.env` is no longer stored in Git.
+- This is a development-ready social prototype, not a production launch. Accounts, posts, groups, messages, notifications, wallet values, and affiliate attribution still disappear after a server restart until the cofounder-owned database work is activated.
+
 ## Suggested file name
 
 `mobile-app/FRONTEND_SOCIAL_MEDIA_PLAN.md`
@@ -17,10 +26,11 @@ This document describes the next phase of the mobile frontend after auth and onb
 ## Existing state
 
 Frontend currently has:
-- `mobile-app/App.tsx`: signup/login screen and placeholder Google auth flow.
-- `mobile-app/App.tsx`: feed screen connected to `GET /feed`, with backend image URLs rendered and video URL records displayed in a video-ready tile.
-- `mobile-app/App.tsx`: Phase A profile and engagement controls for social counts, follow/request state, likes, saves, comments, and shares.
-- `mobile-app/README-authentication.md`: backend contract for auth routes.
+- `App.tsx`: signup/login, session restoration, and the existing Google auth path.
+- `App.tsx`: feed, search, community, direct-message, and profile sections.
+- `App.tsx`: native mobile video playback, story viewing, engagement, follow state, profile editing, push registration state, and live-message connection state.
+- `App.tsx`: Amazon-first physical-product cards and a native browser handoff that does not render Amazon inside an embedded WebView.
+- `README-authentication.md`: backend contract for auth routes.
 
 Backend currently exposes:
 - `POST /auth/register`
@@ -28,12 +38,36 @@ Backend currently exposes:
 - `POST /auth/google`
 - `GET /profiles/me`
 - `GET /profiles/handle/{handle}`
+- `POST /profiles/me`
 - `GET /feed`
 - `POST /feed/{content_id}/view`
-- `POST /media/upload` (placeholder, returns a fake URL)
+- `GET /search?query=...`
+- `GET /dms`, `POST /dms`, `GET /dms/{thread_id}`, and `POST /dms/{thread_id}/messages`
+- `GET /groups`, `POST /groups`, and group membership/approval routes
+- `GET /notifications` and push-token registration/removal routes
+- `WS /realtime` for authenticated live message delivery
+- `POST /media/upload` (authenticated local-development storage; production object storage/CDN remains pending)
 - `GET /stories/by/{creator_id}`
 - `POST /stories`
 - `POST /stories/{story_id}/view`
+- `POST /content/{content_id}/affiliate-links`
+- `POST /affiliate-links/{offer_id}/open`
+- `GET /content/{content_id}/affiliate-attribution`
+
+## Physical product affiliate flow
+
+Creators can optionally attach one or more physical products to a post. Amazon is the first retailer, but the frontend uses a provider field and a shared product-card shape so later retailers can be added without replacing the feed.
+
+The current flow works as follows:
+
+1. The creator publishes a media post and optionally supplies a product title plus a direct Amazon product-details URL.
+2. The backend creates the post first, then creates the affiliate offer owned by that creator. If the offer fails validation, the post stays live and the app explains that the product was not attached.
+3. The feed returns safe card data, not the stored outbound URL.
+4. The card identifies the item as a physical product sold on Amazon, states that Amazon controls price, checkout, delivery, and returns, and displays the required affiliate disclosure.
+5. A deliberate tap asks the backend to record the click and return the approved destination. The app opens it with the device's native browser surface or Amazon app. It does not use an embedded WebView.
+6. Clicks remain separate from confirmed purchases. Creator commission stays at zero until Amazon reports confirm an eligible order and Golt has an approved attribution policy.
+
+Before production, Golt still needs Amazon Associates approval for the mobile app, Golt-owned marketplace tracking IDs, a founder-approved creator commission policy, and a compliant report-reconciliation method. The app must not promise cashback to viewers, add a markup to Amazon's price, or describe creator commission as a processing fee or tip.
 
 Backend data model references:
 - `backend/app/modules/content/service.py`: post service expects `videoUrl` or `mediaItems`.
@@ -88,8 +122,8 @@ Key features:
 - Search results page with creators and posts.
 - Search should query user handles and public posts.
 
-Suggested backend support:
-- `GET /search?query=...` (not yet implemented)
+Backend support:
+- `GET /search?query=...`
 - `GET /profiles/handle/{handle}` for profile resolution.
 
 ### 4. DMs tab
@@ -104,8 +138,8 @@ Key features:
 - Support image/video attachments via the same upload flow used by feed/story media.
 
 Backend note:
-- The backend currently has no DM API routes in `mobile-app` or backend route files other than data model declarations in `backend/data_management/models.py`.
-- DM storage and API should be defined before implementation.
+- The backend has authenticated thread/message routes and realtime delivery, and the mobile screens call them.
+- Message data is still held in server memory, so permanent storage and unread/read state remain production work.
 
 ### 5. Profile page
 
@@ -165,10 +199,9 @@ Key features:
 
 The frontend must treat media as linkable resources but not require real storage yet.
 
-Current backend placeholder:
-- `POST /media/upload` accepts an uploaded file and returns a fake URL:
-  - `https://partnerhub.test/media/{filename}`
-- This is enough for frontend wiring and testing the upload flow.
+Current development backend:
+- `POST /media/upload` authenticates the owner, validates image/video type and size, stores a collision-resistant filename locally, and returns a working `/media/files/...` URL.
+- This is enough for local wiring and testing, but local files are not production object storage and are not distributed by a CDN.
 
 The frontend should:
 - Upload an image/video file to `/media/upload`.
@@ -225,11 +258,7 @@ At minimum, store:
 - `order_index` for multi-item posts
 - `created_at`
 
-Potential storage services:
-- Supabase Storage (matches project plan)
-- AWS S3 / CloudFront
-- Google Cloud Storage
-- Cloudinary or Imgix for automatic transformation
+Potential storage services include S3-compatible object storage with a CDN, AWS S3/CloudFront, Google Cloud Storage, or a media-focused service such as Cloudinary. The production provider and account still need founder approval and provisioning.
 
 Because the current backend already has `post_media` and `stories.media_url`, implementing storage should be the next backend step once you approve the architecture.
 
@@ -350,7 +379,7 @@ Based on `style.md`:
 ## Backend storage and implementation recommendation
 
 ### Current state
-- Storage is currently placeholder-only: `/media/upload` returns `https://partnerhub.test/media/{filename}`.
+- Storage is local-development-only: `/media/upload` writes validated files below the configured media folder and serves them through `/media/files/...`.
 - `ContentService` and `StoryService` already expect `mediaUrl` or `videoUrl` values.
 
 ### What is needed next
@@ -366,8 +395,7 @@ Based on `style.md`:
 
 ## Next step
 
-1. Review this plan and approve the major design direction.
-2. Confirm whether you want the backend to support:
-   - a simple relay upload flow, or
-   - direct signed uploads to a storage service.
-3. Then I will implement the frontend screens and the backend storage handling accordingly.
+1. Provision production object storage and a CDN, then replace local media URLs with signed upload and delivery URLs.
+2. Complete Amazon Associates mobile-app approval and configure the Golt-owned tracking ID only after approval.
+3. Decide the creator share of net, confirmed affiliate income and how reversals will be handled.
+4. Split the monolithic `App.tsx` into maintained screens and components before adding more major UI surfaces.

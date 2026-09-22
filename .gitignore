@@ -31,8 +31,11 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
-.env*.local
+# local environment files (all EXPO_PUBLIC values are embedded in the app,
+# but each developer/build environment still needs its own configuration)
+.env
+.env.*
+!.env.example
 
 # typescript
 *.tsbuildinfo

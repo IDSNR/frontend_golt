@@ -16,6 +16,7 @@ This document describes the next phase of the mobile frontend after auth and onb
 - A live local server check completed signup, profile loading, publishing, feed delivery, an Amazon product-card click, community creation/joining, and two-way direct messaging.
 - The automated server checks for WebSocket delivery and push-token handling pass.
 - Expo Go now replaces a `localhost` API or realtime address with the computer address advertised by Expo, so a phone on the same network can reach the development server.
+- The repository now has matching `com.golt.mobile` identities for iOS and Android, checked-in EAS simulator/preview/production profiles, and a safe `.env.example`; the developer's real `.env` is no longer stored in Git.
 - This is a development-ready social prototype, not a production launch. Accounts, posts, groups, messages, notifications, wallet values, and affiliate attribution still disappear after a server restart until the cofounder-owned database work is activated.
 
 ## Suggested file name
